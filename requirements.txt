@@ -1,0 +1,4 @@
+bottle
+httpx
+pytest
+stamina
