@@ -1,0 +1,3 @@
+[tool.pyright]
+venvPath = ".direnv"
+venv = "python-3.11"

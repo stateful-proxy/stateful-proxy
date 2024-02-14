@@ -18,14 +18,16 @@ def wait_for_server(url: str) -> None:
 
 @pytest.fixture(scope="session")
 def go_server():
+    process = None
     try:
         subprocess.run(["go", "build", "-o", "goproxy", "./..."], check=True)
         process = subprocess.Popen(["./goproxy"])
         wait_for_server("http://localhost:8000/healthcheck")
         yield process
     finally:
-        process.terminate()
-        process.wait()
+        if process:
+            process.terminate()
+            process.wait()
 
 
 #### A target server implementation that we control
