@@ -5,3 +5,4 @@ __pycache__
 goproxy
 .vscode
 *.sqlite
+.ipynb_checkpoints

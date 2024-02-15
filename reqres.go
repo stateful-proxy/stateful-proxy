@@ -199,16 +199,26 @@ func (ra *ReqAccessor) Resp() (*Resp, error) {
 
 	// another goroutine is fetching the response
 	// looping wait for it and return
+	var resp *Resp
 	err := retry.Do(
 		func() error {
-			resp, err := getResp(ra.conn, ra.reqID)
+			var err error
+			resp, err = getResp(ra.conn, ra.reqID)
 			if err != nil {
-				return err
+				return retry.Unrecoverable(err)
 			}
+			if resp == nil {
+				return errors.New("resp is not found")
+			}
+			return nil
 		},
+		retry.Attempts(20),
+		retry.DelayType(retry.CombineDelay(retry.FixedDelay, retry.RandomDelay)),
+		// Waits around 220ms
+		retry.Delay(200*time.Millisecond),
+		retry.MaxJitter(40*time.Millisecond),
 	)
-
-	return nil, err
+	return resp, err
 }
 
 func (ra *ReqAccessor) SetReqBody(conn *sqlite.Conn, body []byte) error {

@@ -167,7 +167,12 @@ func cachingMiddleware(next http.Handler, logger *slog.Logger, dbPool *sqlitemig
 			http.Error(w, fmt.Errorf("Database problem: %s", err.Error()).Error(), http.StatusInternalServerError)
 			return
 		}
-		if resp := reqAccessor.Resp(); resp != nil {
+		resp, err := reqAccessor.Resp()
+		if err != nil {
+			http.Error(w, fmt.Errorf("Database problem: %s", err.Error()).Error(), http.StatusInternalServerError)
+			return
+		}
+		if resp != nil {
 			logger.Info("cache hit")
 			// may block if another request is currently fetching the response
 			// but that's fine
