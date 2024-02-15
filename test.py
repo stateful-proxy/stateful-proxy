@@ -21,7 +21,7 @@ def wait_for_server(url: str) -> None:
 def go_server():
     process = None
     try:
-        subprocess.run(["go", "build", "-o", "goproxy", "./..."], check=True)
+        subprocess.run(["go", "build", "-o", "goproxy", "cmd/main.go"], check=True)
         Path("./db.sqlite").unlink(missing_ok=True)
         process = subprocess.Popen(["./goproxy"])
         wait_for_server("http://127.0.0.1:5000/healthcheck")
