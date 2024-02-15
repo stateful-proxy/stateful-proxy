@@ -12,20 +12,25 @@ import (
 	"strings"
 	"time"
 
+	"github.com/avast/retry-go/v4"
 	"zombiezen.com/go/sqlite"
 	"zombiezen.com/go/sqlite/sqlitex"
 )
 
 type Req struct {
 	Scheme, Host, Path, Method string
-	Port                       int16
+	Port                       *string
 	Headers                    http.Header
 	Body                       []byte
-	CreatedAt                  time.Time
+	CreatedAt                  *time.Time
 }
 
 func (req *Req) HostAndPort() string {
-	return fmt.Sprintf("%s:%d", req.Host, req.Port)
+	hostAndPort := req.Host
+	if req.Port != nil {
+		hostAndPort = fmt.Sprintf("%s:%s", hostAndPort, *req.Port)
+	}
+	return hostAndPort
 }
 
 func (req *Req) HeadersSerialized() []byte {
@@ -35,21 +40,24 @@ func (req *Req) HeadersSerialized() []byte {
 }
 
 type Resp struct {
-	Status    int16
+	Status    int32
 	Headers   http.Header
-	CreatedAt time.Time
+	CreatedAt *time.Time
 	Body      []byte
 }
 
-const REQ_OWN = 0
-const REQ_WAIT = 1
+func (resp *Resp) HeadersSerialized() []byte {
+	var buf bytes.Buffer
+	resp.Headers.Write(&buf)
+	return buf.Bytes()
+}
 
 type ReqAccessor struct {
 	conn  *sqlite.Conn
 	req   *Req
 	reqID int64
 	resp  *Resp
-	state uint8
+	owns  bool
 }
 
 func getReq(
@@ -74,16 +82,25 @@ func getReq(
 func insertReq(
 	conn *sqlite.Conn, req *Req,
 ) (reqID int64, err error) {
+	now := time.Now()
 	err = sqlitex.Execute(
 		conn,
-		`INSERT INTO reqs (scheme, host_and_port, path, method, headers, created_at_ms, body) VALUES (?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO reqs (scheme, host_and_port, path, method, headers, created_at_ms) VALUES (?, ?, ?, ?, ?, ?)`,
 		&sqlitex.ExecOptions{
-			Args: []any{req.Scheme, req.HostAndPort(), req.Path, req.Method, req.HeadersSerialized(), req.CreatedAt.UnixMilli(), req.Body},
+			Args: []any{
+				req.Scheme,
+				req.HostAndPort(),
+				req.Path,
+				req.Method,
+				req.HeadersSerialized(),
+				now.UnixMilli(),
+			},
 		},
 	)
 	if err != nil {
 		return 0, err
 	}
+	req.CreatedAt = &now
 	return conn.LastInsertRowID(), nil
 }
 
@@ -126,11 +143,12 @@ func getResp(conn *sqlite.Conn, reqID int64) (*Resp, error) {
 			return nil, err
 		}
 
+		createdAt := time.UnixMilli(respDB.CreatedAtMs)
 		return &Resp{
-			Status:    int16(respDB.Status),
+			Status:    int32(respDB.Status),
 			Headers:   http.Header(headers),
 			Body:      respDB.Body,
-			CreatedAt: time.UnixMilli(respDB.CreatedAtMs),
+			CreatedAt: &createdAt,
 		}, nil
 	}
 	return nil, nil
@@ -151,11 +169,11 @@ func NewReqAccessor(conn *sqlite.Conn, req *Req) (*ReqAccessor, error) {
 		}
 		log.Printf("insertedReqID: %v\n", insertedReqID)
 		ra.reqID = insertedReqID
-		ra.state = REQ_OWN
+		ra.owns = true
 		return ra, nil
 	} else {
 		ra.reqID = reqID
-		ra.req.CreatedAt = *createdAt
+		ra.req.CreatedAt = createdAt
 	}
 
 	resp, err := getResp(conn, reqID)
@@ -167,14 +185,80 @@ func NewReqAccessor(conn *sqlite.Conn, req *Req) (*ReqAccessor, error) {
 		return ra, nil
 	}
 
-	ra.state = REQ_WAIT
 	return ra, nil
 }
 
-func (ra *ReqAccessor) State() uint8 {
-	return ra.state
+func (ra *ReqAccessor) Resp() (*Resp, error) {
+	// TODO Blocks if the state is REQ_WAIT
+	if ra.resp != nil {
+		return ra.resp, nil
+	}
+	if ra.owns {
+		return nil, nil
+	}
+
+	// another goroutine is fetching the response
+	// looping wait for it and return
+	err := retry.Do(
+		func() error {
+			resp, err := getResp(ra.conn, ra.reqID)
+			if err != nil {
+				return err
+			}
+		},
+	)
+
+	return nil, err
 }
 
-func (ra *ReqAccessor) Resp() *Resp {
-	return ra.resp
+func (ra *ReqAccessor) SetReqBody(conn *sqlite.Conn, body []byte) error {
+	if len(body) == 0 {
+		return nil
+	}
+	if ra.reqID == 0 {
+		return errors.New("reqID is not set")
+	}
+
+	err := sqlitex.Execute(
+		conn,
+		`UPDATE reqs SET body = ? WHERE id = ?`,
+		&sqlitex.ExecOptions{
+			Args: []any{body, ra.reqID},
+		},
+	)
+	if err != nil {
+		return err
+	}
+	ra.req.Body = body
+	return nil
+}
+
+func (ra *ReqAccessor) SetResp(conn *sqlite.Conn, resp *Resp) error {
+	if ra.reqID == 0 {
+		return errors.New("reqID is not set")
+	}
+
+	if resp.CreatedAt == nil {
+		now := time.Now()
+		resp.CreatedAt = &now
+	}
+
+	err := sqlitex.Execute(
+		conn,
+		`INSERT INTO resps (req_id, status, headers, body, created_at_ms) VALUES (?, ?, ?, ?, ?)`,
+		&sqlitex.ExecOptions{
+			Args: []any{
+				ra.reqID,
+				resp.Status,
+				resp.HeadersSerialized(),
+				resp.Body,
+				resp.CreatedAt.UnixMilli(),
+			},
+		},
+	)
+	if err != nil {
+		return err
+	}
+	ra.resp = resp
+	return nil
 }

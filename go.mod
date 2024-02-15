@@ -2,7 +2,10 @@ module github.com/egemengol/goproxy
 
 go 1.22.0
 
-require zombiezen.com/go/sqlite v1.1.1
+require (
+	github.com/avast/retry-go/v4 v4.5.1
+	zombiezen.com/go/sqlite v1.1.1
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
